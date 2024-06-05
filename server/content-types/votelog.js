@@ -22,11 +22,7 @@
     }
   },
   attributes: {
-    ip: {
-      type: 'string',
-      configurable: true
-    },
-    iphash: {
+    userUid: {
       type: 'string',
       configurable: true
     },

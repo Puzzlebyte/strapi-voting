@@ -73,6 +73,8 @@ module.exports = ({ strapi }) => ({
       throw new PluginError(400, e.message);
     }
   },
+
+  /** Update a user's votes */
   async updateUser (votes, id) {
     try {
       const finalVote = await strapi.entityService.update('plugin::voting.vote', id, {
@@ -87,6 +89,8 @@ module.exports = ({ strapi }) => ({
       throw new PluginError(400, e.message);
     }
   },
+
+  /* Create a new user, throw if there is a collision */
   async createNewUser (userUid) {
     try {
       const newUser = await strapi.entityService.create('plugin::voting.vote', {
@@ -116,21 +120,12 @@ module.exports = ({ strapi }) => ({
       throw new PluginError(400, e.message);
     }
   },
-  async vote(relation, data, user = null, fingerprint = {}) {
-    const config = await this.pluginService().getConfig('googleRecaptcha');
+
+  /* Vote on behalf of an user */
+  async vote(relation, data) {
     const [ uid, relatedId ] = await this.pluginService().parseRelationString(relation);
-    // Google Recaptcha
-    const recaptchaEnabled = config[uid] || false
-    const dataJson = JSON.parse(data)
-    if (recaptchaEnabled) {
-      if (!dataJson.recaptchaToken) {
-        throw new PluginError(400, `Google Recaptcha enabled for the collection but no user captcha token present.`);
-      }
-      const recaptchaResponse = await verifyRecaptcha(dataJson.recaptchaToken)
-      if (!recaptchaResponse || !recaptchaResponse.success) {
-        throw new PluginError(400, `Google Recaptcha verification failed.`);
-      }
-    }
+
+    if (!data.userUid) throw new Error("Must pass a userUid in the request body.");
 
     // Check for correct collection relation string in req
     const singleRelationFulfilled = relation && REGEX.relatedUid.test(relation);
