@@ -33,79 +33,6 @@ module.exports = ({ strapi }) => ({
     return { collectionTypes, singleTypes } || null;
   },
 
-  // Send email confirmation
-  async sendConfirmationEmail (email, collectionName, entryId, projectName = '') {
-    // Check if params provided
-    if (!email || !collectionName || !entryId) {
-      throw new PluginError(400, 'Email, collectionName and entryId are required.');
-    };
-    console.log(`[SERVICES]-[sendConfirmationEmail] Sending email confirmation to <${email}> for entry <${entryId}> in collection <${collectionName}>`);
-    // Generate confirmation token
-    const confirmationToken = crypto.randomBytes(20).toString('hex');
-    // Update entry with the generated token
-    await strapi.entityService.update(collectionName, entryId, {
-      data: { confirmationToken }
-    });
-    // Prepare confirmation url and project name
-    const confirmationUrl = `https://api.lrytas.lt/balsavimai/voting/email-confirmation/${collectionName}/${confirmationToken}`
-    // Send confirmation email
-    try {
-      await strapi
-      .plugin('email')
-      .service('email')
-      .send({
-        template_id: 'd-73f06f7ca1af4f348413a922416a77c8',
-        personalizations: [
-          {
-            from: `Lrytas.lt <pagalba@lrytas.lt>`,
-            replyTo: 'pagalba@lrytas.lt',
-            subject: 'Registracijos patvirtinimas',
-            to: [
-              {
-                email: email
-              }
-            ],
-            dynamic_template_data: {
-              url: confirmationUrl,
-              title: projectName
-            }
-          }
-        ],
-        to: email,
-        from: `Lrytas.lt <pagalba@lrytas.lt>`,
-        replyTo: 'pagalba@lrytas.lt',
-        subject: 'Registracijos patvirtinimas'
-      });
-      console.log(`[SERVICES]-[sendConfirmationEmail] Sending email confirmation to <${email}> for entry <${entryId}> in collection <${collectionName}> was SUCCESSFUL!`);
-    } catch (e) {
-      console.log(`[SERVICES]-[sendConfirmationEmail] Sending email confirmation to <${email}> for entry <${entryId}> in collection <${collectionName}> FAILED`);
-      console.log(e.message)
-    }
-  },
-
-  async confirmEmail (confirmationToken, collectionName) {
-    // Check if params provided
-    if (!confirmationToken || !collectionName) {
-      throw new PluginError(400, 'Confirmation token and collectionName are required.');
-    };
-    console.log(`[SERVICES]-[confirmEmail] Confirming email with token <${confirmationToken}> in collection <${collectionName}>`);
-    const entry = await strapi.db.query(collectionName).findOne({
-      where: { confirmationToken }
-    })
-    if (!entry) {
-      throw new PluginError(400, 'Failed to confirm, entry not found', entry);
-    }
-    console.log(`[SERVICES]-[confirmEmail] Updating confirmed entry ID: <${entry.id}> in collection <${collectionName}>`);
-    const updatedEntry = await strapi.entityService.update(collectionName, entry.id, {
-      data: { emailConfirmed: true }
-    });
-    if (!updatedEntry) {
-      throw new PluginError(400, 'Failed to confirm, updating entry failed', updatedEntry);
-    }
-    console.log(`[SERVICES]-[confirmEmail] Email for entry ID: <${entry.id}> in collection <${collectionName}> confirmed successfuly!`);
-    return updatedEntry
-  },
-
   async getCollection(contentType) {
     const entries = await strapi.entityService.findMany(contentType, { populate: '*' })
     return entries
@@ -131,11 +58,11 @@ module.exports = ({ strapi }) => ({
       throw new PluginError(400, e.message);
     }
   },
-  async findUser (iphash) {
-    console.log('[VOTING] Looking for user with iphash:', iphash)
+  async findUser (userUid) {
+    console.log('[VOTING] Looking for user with uid:', userUid)
     try {
       const user = await strapi.entityService.findMany('plugin::voting.vote', {
-        filters: { iphash },
+        filters: { userUid },
         populate: ['votes']
       });
       if (user) {
@@ -160,12 +87,11 @@ module.exports = ({ strapi }) => ({
       throw new PluginError(400, e.message);
     }
   },
-  async createNewUser (ip, iphash) {
+  async createNewUser (userUid) {
     try {
       const newUser = await strapi.entityService.create('plugin::voting.vote', {
         data: {
-          ip: ip,
-          iphash: iphash,
+          userUid,
           votes: []
         },
       });
@@ -205,115 +131,97 @@ module.exports = ({ strapi }) => ({
         throw new PluginError(400, `Google Recaptcha verification failed.`);
       }
     }
-    // Fingerprinting
-    const ip = fingerprint.components.geoip.ip
-    const country = fingerprint.components.geoip.country
-    const userAgent = fingerprint.components.useragent.string
-    if (!ip || !country || !userAgent) {
-      throw new PluginError(400, `There has been an error parsing userAgent/IP strings. IP: ${ip}, Country: ${country}, userAgent: ${userAgent}`);
-    } else {
-      if (country !== 'LT' && country !== 'ADMIN') {
-        throw new PluginError(400, `Voting is only possible from within Lithuania. IP: ${ip}, Country: ${country}, userAgent: ${userAgent}`);
-      }
-      const hash = fingerprint.hash
-      const iphash = ip.split(',')[0] + hash
-      // Check for correct collection relation string in req
-      const singleRelationFulfilled = relation && REGEX.relatedUid.test(relation);
-      if (!singleRelationFulfilled) {
-        throw new PluginError(400, `Field "related" got incorrect format, use format like "api::<collection name>.<content type name>:<entity id>"`);
-      }
-      // Parse collection relation string
-      // const [ uid, relatedId ] = await this.pluginService().parseRelationString(relation);
-      // Find related entity by relation string
-      const relatedEntity = await strapi.entityService.findOne(uid, relatedId, { fields: ['votes'] });
-      if (!relatedEntity) {
-        throw new PluginError(400, `Relation for field "related" does not exist. Check your payload please.`);
-      }
-      // If relation correct and entity found...
-      if (singleRelationFulfilled && relatedEntity) {
-        try {
-          // Try to find user
-          const votingUser = await this.findUser(iphash)
-          if (votingUser) {
-            // Check for ids
-            const votedBefore = checkForExistingId(votingUser.votes, relation)
-            if (votedBefore) {
-              throw new PluginError(403, `Already voted for ${relation}`);
-            } else {
-              const votes = await relatedEntity.votes + 1
-              const voted = await this.doVoting(uid, relatedEntity.id, votes)
-              if (voted) {
-                // console.log('[VOTING] Voted successfuly', JSON.stringify(voted))
-                const payload = {
-                  ip: ip,
-                  iphash: iphash,
-                  related: relation,
-                  country,
-                  userAgent,
-                  user: votingUser.id,
-                  voteId: String(relatedId),
-                  votedAt: new Date()
-                }
-                const voteLog = await this.createVotelog(payload)
-                if (voteLog) {
-                  const updatedVotes = votingUser.votes && votingUser.votes.length > 0 ? [...votingUser.votes, voteLog.id] : [voteLog.id]
-                  const updatedUser = await this.updateUser(updatedVotes, votingUser.id)
-                  if (updatedUser && voted) {
-                    // console.log('[VOTING] Voting finished successfuly', JSON.stringify(updatedUser))
-                    return voted
-                  } else {
-                    console.log('[VOTING] Voting did not successfuly finished, error updating user')
-                  }
-                } else {
-                  console.log('[VOTING] VoteLog creation failed, aborting..')
-                }
-              } else {
-                console.log('[VOTING] Voting failed, aborting..')
-              }
-            }
-            return { test: 'test' }
+
+    // Check for correct collection relation string in req
+    const singleRelationFulfilled = relation && REGEX.relatedUid.test(relation);
+    if (!singleRelationFulfilled) {
+      throw new PluginError(400, `Field "related" got incorrect format, use format like "api::<collection name>.<content type name>:<entity id>"`);
+    }
+    // Parse collection relation string
+    // const [ uid, relatedId ] = await this.pluginService().parseRelationString(relation);
+    // Find related entity by relation string
+    const relatedEntity = await strapi.entityService.findOne(uid, relatedId, { fields: ['votes'] });
+    if (!relatedEntity) {
+      throw new PluginError(400, `Relation for field "related" does not exist. Check your payload please.`);
+    }
+    // If relation correct and entity found...
+    if (singleRelationFulfilled && relatedEntity) {
+      try {
+        // Try to find user
+        const votingUser = await this.findUser(userUid)
+        if (votingUser) {
+          // Check for ids
+          const votedBefore = checkForExistingId(votingUser.votes, relation)
+          if (votedBefore) {
+            throw new PluginError(403, `Already voted for ${relation}`);
           } else {
-            // console.log('[VOTING] User not found, creating one..')
-            const votingUserNew = await this.createNewUser(ip, iphash)
-            if (votingUserNew) {
-              // console.log('[VOTING] New user created:', votingUserNew)
-              const votes = await relatedEntity.votes + 1
-              const voted = await this.doVoting(uid, relatedEntity.id, votes)
-              if (voted) {
-                // console.log('[VOTING] Voted successfuly', JSON.stringify(voted))
-                const payload = {
-                  ip: ip,
-                  country,
-                  userAgent,
-                  iphash: iphash,
-                  related: relation,
-                  user: votingUserNew.id,
-                  voteId: String(relatedId),
-                  votedAt: new Date()
-                }
-                const voteLog = await this.createVotelog(payload)
-                if (voteLog) {
-                  const updatedVotes = votingUserNew.votes && votingUserNew.votes.length > 0 ? [...votingUserNew.votes, voteLog.id] : [voteLog.id]
-                  const updatedUser = await this.updateUser(updatedVotes, votingUserNew.id)
-                  if (updatedUser && voted) {
-                    console.log('[VOTING] Voting finished successfuly')
-                    return voted
-                  } else {
-                    console.log('[VOTING] Voting did not successfuly finished, error updating user')
-                  }
+            const votes = await relatedEntity.votes + 1
+            const voted = await this.doVoting(uid, relatedEntity.id, votes)
+            if (voted) {
+              // console.log('[VOTING] Voted successfuly', JSON.stringify(voted))
+              const payload = {
+                userUid,
+                related: relation,
+                user: votingUser.id,
+                voteId: String(relatedId),
+                votedAt: new Date()
+              }
+              const voteLog = await this.createVotelog(payload)
+              if (voteLog) {
+                const updatedVotes = votingUser.votes && votingUser.votes.length > 0 ? [...votingUser.votes, voteLog.id] : [voteLog.id]
+                const updatedUser = await this.updateUser(updatedVotes, votingUser.id)
+                if (updatedUser && voted) {
+                  // console.log('[VOTING] Voting finished successfuly', JSON.stringify(updatedUser))
+                  return voted
                 } else {
-                  console.log('[VOTING] VoteLog creation failed, aborting..')
+                  console.log('[VOTING] Voting did not successfuly finished, error updating user')
                 }
               } else {
-                console.log('[VOTING] Voting failed, aborting..')
+                console.log('[VOTING] VoteLog creation failed, aborting..')
               }
             } else {
-              console.log('[VOTING] New user creation failed, aborting..')
+              console.log('[VOTING] Voting failed, aborting..')
             }
           }
-        } catch (e) {
-          throw new PluginError(400, e.message);
+          return { test: 'test' }
+        } else {
+          // console.log('[VOTING] User not found, creating one..')
+          const votingUserNew = await this.createNewUser(userUid)
+          if (votingUserNew) {
+            // console.log('[VOTING] New user created:', votingUserNew)
+            const votes = await relatedEntity.votes + 1
+            const voted = await this.doVoting(uid, relatedEntity.id, votes)
+            if (voted) {
+              // console.log('[VOTING] Voted successfuly', JSON.stringify(voted))
+              const payload = {
+                userUid,
+                related: relation,
+                user: votingUserNew.id,
+                voteId: String(relatedId),
+                votedAt: new Date()
+              }
+              const voteLog = await this.createVotelog(payload)
+              if (voteLog) {
+                const updatedVotes = votingUserNew.votes && votingUserNew.votes.length > 0 ? [...votingUserNew.votes, voteLog.id] : [voteLog.id]
+                const updatedUser = await this.updateUser(updatedVotes, votingUserNew.id)
+                if (updatedUser && voted) {
+                  console.log('[VOTING] Voting finished successfuly')
+                  return voted
+                } else {
+                  console.log('[VOTING] Voting did not successfuly finished, error updating user')
+                }
+              } else {
+                console.log('[VOTING] VoteLog creation failed, aborting..')
+              }
+            } else {
+              console.log('[VOTING] Voting failed, aborting..')
+            }
+          } else {
+            console.log('[VOTING] New user creation failed, aborting..')
+          }
         }
+      } catch (e) {
+        throw new PluginError(400, e.message);
       }
       throw new PluginError(400, 'No content received');
     }
